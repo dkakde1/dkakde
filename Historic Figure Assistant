@@ -1,0 +1,136 @@
+
+import gradio as gr
+import langchain
+import langchain_core
+import langchain_ollama
+import langchain_chroma
+import langchain_classic
+
+# Core abstractions
+from langchain_core.documents import Document
+from langchain_core.prompts import PromptTemplate
+
+# Vector store and LLM integration
+from langchain_chroma import Chroma
+from langchain_ollama import OllamaEmbeddings, ChatOllama
+
+# Modern orchestration chains from langchain_classic
+from langchain_classic.chains.combine_documents import create_stuff_documents_chain
+from langchain_classic.chains import create_retrieval_chain
+
+# --- 1. DATA PREPARATION & VECTOR STORE SETUP ---
+doc1 = Document(
+    page_content="Cleopatra (69 BCE - 30 BCE). Nationality: Egyptian. Lifespan: 69 BCE - 30 BCE. Contribution: Last active ruler of the Ptolemaic Kingdom of Egypt. Trivia: Known for her political alliances with Julius Caesar and Mark Antony. Spoke nine languages, including Egyptian, unlike her predecessors.",
+    metadata={"person": "Cleopatra"}
+)
+doc2 = Document(
+    page_content="Leonardo da Vinci (1452 - 1519). Nationality: Italian. Lifespan: 1452 - 1519. Contribution: Polymath, artist, and inventor. Trivia: Painted the Mona Lisa and The Last Supper. His notebooks contain designs for flying machines and anatomical studies far ahead of his time.",
+    metadata={"person": "Leonardo da Vinci"}
+)
+doc3 = Document(
+    page_content="Mahatma Gandhi (1869 - 1948). Nationality: Indian. Lifespan: 1869 - 1948. Contribution: Leader of India's non-violent independence movement. Trivia: Pioneered satyagraha, a form of non-violent resistance. Led the Salt March in 1930 to protest British salt taxes.",
+    metadata={"person": "Mahatma Gandhi"}
+)
+doc4 = Document(
+    page_content="Albert Einstein (1879 - 1955). Nationality: German (later Swiss, American). Lifespan: 1879 - 1955. Contribution: Theoretical physicist. Trivia: Developed the theory of relativity, including E=mc². Won the Nobel Prize in Physics in 1921 for his work on the photoelectric effect.",
+    metadata={"person": "Albert Einstein"}
+)
+
+docs = [doc1, doc2, doc3, doc4]
+
+# Initialize Vector DB (uses locally stored 30m embedding model)
+vector_store = Chroma(
+    embedding_function=OllamaEmbeddings(model="granite-embedding:30m"),
+    persist_directory="my_chroma_db",
+    collection_name="my_collection", 
+)
+vector_store.add_documents(docs)
+retriever = vector_store.as_retriever(search_kwargs={"k": 2})
+
+# --- 2. MODEL & RETRIEVAL CHAIN PIPELINE ---
+llm = ChatOllama(model="llama3.2:latest", temperature=0.0)
+
+# The template strictness forces a polite out-of-bounds disclaimer
+prompt_template = """ 
+You are an expert history information assistant. Your goal is to answer questions using ONLY the provided context below.
+
+Context: 
+{context}
+
+Instructions:
+1. Carefully analyze the provided Context to see if it mentions the historical figure or information requested.
+2. If the Context contains the answer, summarize or explain it accurately based on that text.
+3. If context contain greetings like 'Hi','Hello' responce with greeting like Hi.
+4. If context is Thank You, Bye so say same thing back to user.
+5. If asked about you like "How are you" say "Im good, Thank you".
+6. If the Context does NOT contain information to answer the question, or if the question is completely out-of-scope (unrelated to the individuals mentioned in the context), reply EXACTLY with:
+"I am sorry, Unable to find Knowledge facts."
+
+Question: {input}
+Answer:
+"""
+prompt = PromptTemplate.from_template(prompt_template)
+
+document_chain = create_stuff_documents_chain(llm, prompt)
+qa_chain = create_retrieval_chain(retriever, document_chain)
+
+# --- 3. GRADIO INTERFACE CONFIGURATION ---
+def chat_bot_response(message, history):
+    """
+    Function targeting incoming messages from Gradio UI, pushing queries 
+    through LangChain pipeline, and returning the structured string answer.
+    """
+    try:
+        response = qa_chain.invoke({"input": message})
+        return response["answer"]
+    except Exception as e:
+        return f"An internal connection error occurred: {str(e)}"
+
+def print_goodbye_message():
+    """
+    Step 1: Broadcasts visual browser updates and console prints 
+    while the web server infrastructure is fully alive.
+    """
+    print("\nGoodbye! The chatbot session has ended safely.")
+    gr.Info("Goodbye! The chatbot session has now ended.")
+    # You must return something or None to allow the event chain to continue
+    return None
+
+def kill_server_instance():
+    """
+    Step 2: Shuts down the active networking block after messages execute.
+    """
+    print("Shutting down Gradio application...")
+    demo.close()
+
+
+# Build the layout window framework
+with gr.Blocks(theme="soft") as demo:
+    gr.Markdown("# 🏛️ Historical Figures Assistant")
+    gr.Markdown("Ask questions about notable historical figures (Cleopatra, Da Vinci, Gandhi, Einstein). The AI will politely refuse out-of-document queries.")
+    
+    # Primary Chat Engine Window
+    chat_ui = gr.ChatInterface(
+        fn=chat_bot_response,
+        examples=[
+            "Could you talk about Cleopatra?", 
+            "What can you tell me about Leonardo da Vinci's artwork?", 
+            "Who was father of Nation, India?"
+        ]
+    )
+    
+    # ADD ONLY THIS ONE LINE RIGHT BELOW IT:
+    chat_ui.textbox.submit(fn=None, js="() => { document.querySelector('textarea, input[type=text]').focus(); }")
+
+     #Action Shutdown Button Row
+    with gr.Row():
+        close_btn = gr.Button("❌ Close Chatbot", variant="stop", size="sm")
+    
+    # 2. FIX: Chain the actions sequentially so messages trigger BEFORE close()
+    close_btn.click(fn=print_goodbye_message, inputs=None, outputs=None).then(
+        fn=kill_server_instance, inputs=None, outputs=None
+    )
+
+if __name__ == "__main__":
+    # Launches inside your browser only
+    demo.launch(inline=False)
